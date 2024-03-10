@@ -1,2 +1,4 @@
 data/training_data_smaller.pkl
 data/training_data.pkl
+
+*.png

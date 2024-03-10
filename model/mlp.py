@@ -16,10 +16,10 @@ def get_pad(size, kernel_size, stride=1, dilation=1):
 class NGCCPHAT(nn.Module):
     def __init__(self, 
                  max_tau, 
-                 sig_len, 
                  num_channels, 
                  conv_channels,
-                 fs):
+                 sincnet_params,
+                 ):
         super().__init__()
 
         '''
@@ -36,18 +36,7 @@ class NGCCPHAT(nn.Module):
         '''
 
         self.max_tau = max_tau
-        sincnet_params = {'input_dim': sig_len,
-                          'fs': fs,
-                          'cnn_N_filt': [128,  128, num_channels],
-                          'cnn_len_filt': [1023,  13, 7],
-                          'cnn_max_pool_len': [1, 1,  1],
-                          'cnn_use_laynorm_inp': False,
-                          'cnn_use_batchnorm_inp': False,
-                          'cnn_use_laynorm': [False, False,  False],
-                          'cnn_use_batchnorm': [True,True,  True],
-                          'cnn_act': ['leaky_relu', "leaky_relu", 'linear'],
-                          'cnn_drop': [0.0, 0.0, 0.0],
-                          }
+        
 
         self.backbone = SincNet(sincnet_params)
         self.mlp_kernels = [11, 9, 7]
