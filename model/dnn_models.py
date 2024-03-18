@@ -4,7 +4,6 @@ Circular padding has been added before each convolution.
 Source: https://github.com/mravanelli/SincNet
 '''
 
-
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -12,14 +11,12 @@ import torch.nn as nn
 from torch.autograd import Variable
 import math
 
-
 def get_pad(size, kernel_size, stride=1, dilation=1):
     effective_kernel_size = (kernel_size - 1) * dilation + 1
     pad_total = max(0, (size - 1) * stride + effective_kernel_size - size)
     pad_before = pad_total // 2
     pad_after = pad_total - pad_before
     return (pad_before, pad_after)
-
 def flip(x, dim):
     xsize = x.size()
     dim = x.dim() + dim if dim < 0 else dim
@@ -28,13 +25,6 @@ def flip(x, dim):
     x = x.view(x.size(0), x.size(1), -1)[:, getattr(torch.arange(x.size(1)-1,
                                                                  -1, -1), ('cpu', 'cuda')[x.is_cuda])().long(), :]
     return x.view(xsize)
-def sinc(band, t_right):
-    y_right = torch.sin(2*math.pi*band*t_right)/(2*math.pi*band*t_right)
-    y_left = flip(y_right, 0)
-
-    y = torch.cat([y_left, Variable(torch.ones(1)).cuda(), y_right])
-
-    return y
 
 
 class SincConv_fast(nn.Module):
@@ -59,8 +49,8 @@ class SincConv_fast(nn.Module):
     https://arxiv.org/abs/1808.00158
     """
 
-    def __init__(self, out_channels, kernel_size, sample_rate=204800, in_channels=1,
-                 stride=1, padding=0, dilation=1, bias=False, groups=1, min_low_hz=100, min_band_hz=1000):
+    def __init__(self, out_channels, kernel_size, sample_rate, max_hz, low_hz, min_band_hz, in_channels=1,
+                 stride=1, padding=0, dilation=1, bias=False, groups=1):
 
         super(SincConv_fast, self).__init__()
 
@@ -71,6 +61,7 @@ class SincConv_fast(nn.Module):
 
         self.out_channels = out_channels
         self.kernel_size = kernel_size
+        self.max_hz = max_hz
 
         # Forcing the filters to be odd (i.e, perfectly symmetrics)
         if kernel_size % 2 == 0:
@@ -86,10 +77,10 @@ class SincConv_fast(nn.Module):
             raise ValueError('SincConv does not support groups.')
 
         self.sample_rate = sample_rate
-        self.min_low_hz = min_low_hz
+        self.min_low_hz = low_hz
         self.min_band_hz = min_band_hz
 
-        hz = np.linspace(self.min_low_hz, 30000, self.out_channels + 1)
+        hz = np.linspace(self.min_low_hz, self.max_hz, self.out_channels + 1)
         self.low_hz_ = nn.Parameter(torch.Tensor(hz[:-1]).view(-1, 1))
         self.band_hz_ = nn.Parameter(torch.Tensor(np.diff(hz)).view(-1, 1))
 
@@ -111,41 +102,22 @@ class SincConv_fast(nn.Module):
         features : `torch.Tensor` (batch_size, out_channels, n_samples_out)
             Batch of sinc filters activations.
         """
-
         self.n_ = self.n_.to(waveforms.device)
-
         self.window_ = self.window_.to(waveforms.device)
-
         low = self.min_low_hz + torch.abs(self.low_hz_)
-
-        high = torch.clamp(low + self.min_band_hz
-                           + torch.abs(self.band_hz_), self.min_low_hz, self.sample_rate/2)
+        high = torch.clamp(low + self.min_band_hz + torch.abs(self.band_hz_), self.min_low_hz, self.sample_rate/2)
         band = (high-low)[:, 0]
-
         f_times_t_low = torch.matmul(low, self.n_)
         f_times_t_high = torch.matmul(high, self.n_)
-
-        # Equivalent of Eq.4 of the reference paper (SPEAKER RECOGNITION FROM RAW WAVEFORM WITH SINCNET). I just have expanded the sinc and simplified the terms. This way I avoid several useless computations.
-        band_pass_left = ((torch.sin(f_times_t_high)
-                          - torch.sin(f_times_t_low))/(self.n_/2))*self.window_
+        band_pass_left = ((torch.sin(f_times_t_high) - torch.sin(f_times_t_low))/(self.n_/2))*self.window_
         band_pass_center = 2*band.view(-1, 1)
         band_pass_right = torch.flip(band_pass_left, dims=[1])
-
-        band_pass = torch.cat(
-            [band_pass_left, band_pass_center, band_pass_right], dim=1)
-
+        band_pass = torch.cat([band_pass_left, band_pass_center, band_pass_right], dim=1)
         band_pass = band_pass / (2*band[:, None])
-
-        self.filters = (band_pass).view(
-            self.out_channels, 1, self.kernel_size)
-
+        self.filters = (band_pass).view(self.out_channels, 1, self.kernel_size)
         return F.conv1d(waveforms, self.filters, stride=self.stride,
                         padding=self.padding, dilation=self.dilation,
                         bias=None, groups=1)
-
-
-
-
 class SincNet(nn.Module):
 
     def __init__(self, options):
@@ -159,6 +131,9 @@ class SincNet(nn.Module):
        self.input_dim = int(options['input_dim'])
        self.fs = options['fs']
        self.N_cnn_lay = len(options['cnn_N_filt'])
+       self.max_hz = options['max_hz']
+       self.low_hz = options['low_hz']
+       self.min_band_hz = options['min_band_hz']
        self.conv = nn.ModuleList([])
        self.act = nn.ModuleList([])
        self.drop = nn.ModuleList([])
@@ -170,14 +145,13 @@ class SincNet(nn.Module):
        for i in range(self.N_cnn_lay):
 
          N_filt = int(self.cnn_N_filt[i])
-         len_filt = int(self.cnn_len_filt[i])
          self.drop.append(nn.Dropout(p=self.cnn_drop[i]))
          self.act.append(act_fun(self.cnn_act[i]))
          self.bn.append(nn.BatchNorm1d(N_filt, momentum=0.05))
         
         # only the first layer has this sinc function
          if i == 0:
-          self.conv.append(SincConv_fast(self.cnn_N_filt[0], self.cnn_len_filt[0], self.fs))
+          self.conv.append(SincConv_fast(self.cnn_N_filt[0], self.cnn_len_filt[0], self.fs, self.max_hz, self.low_hz, self.min_band_hz))
          else:
           self.conv.append(nn.Conv1d(self.cnn_N_filt[i-1], self.cnn_N_filt[i], self.cnn_len_filt[i]))
 
@@ -194,9 +168,6 @@ class SincNet(nn.Module):
          x = F.pad(x, pad=padding, mode='circular')
          x = self.drop[i](self.act[i](F.max_pool1d(self.conv[i](x), self.cnn_max_pool_len[i])))
        return x
-
-
-
 def act_fun(act_type):
 
  if act_type == "relu":

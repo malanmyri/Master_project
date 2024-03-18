@@ -29,63 +29,50 @@ import os
 Defining all the parameters
 '''
 data_path = r"data\training_data_sample_1.pkl"
+print('Loading data...')
+data = pd.read_pickle(data_path)
+data = data[:400]
+
 seed = 42
 
 # Training hyperparams
-batch_size = 16
-epochs = 10
+batch_size = 4
+epochs = 1
 lr = 0.001             # learning rate
 wd = 0.01              # weight decay
 patience = 5           # Number of epochs to wait for improvement before stopping
 
 # Model parameters
-max_tau = 100          # maximum tau value for GCC-PHAT
+max_tau = 60           # maximum tau value for GCC-PHAT
 num_channels = 3       # number of channels in final layer of NGCCPHAT backbone
 conv_channels = 10     # number of channels in the convolutional layers of NGCCPHAT backbone
 fs = 204800            # sampling rate
-sig_len = 3000         # length of snippet used for tdoa estimation
-number_of_stacked = 10 # number of stacked snippets
+number_of_stacked = 20 # number of stacked snippets
 n_outputs = 4          # number of kvadrants classification
 
 
-sincnet_params = {'input_dim': sig_len,
+sincnet_params = {'input_dim': len(data.sensor_1[0]),
                           'fs': fs,
                           'cnn_N_filt': [10,   num_channels],
                           'cnn_len_filt': [1023,  7],
                           'cnn_max_pool_len': [1, 1],
-                          'cnn_use_laynorm_inp': False,
-                          'cnn_use_batchnorm_inp': False,
-                          'cnn_use_laynorm': [False,   False],
-                          'cnn_use_batchnorm': [True,  True],
                           'cnn_act': ['leaky_relu', 'linear'],
                           'cnn_drop': [0.0, 0.0],
+                          'max_hz': 20000.0,
+                            'low_hz': 100.0,
+                            'min_band_hz': 100.0,
                           }
-
-'''
-Setting system seeds for reproducibility
-'''
 
 # For reproducibility
 torch.manual_seed(seed)
 random.seed(seed)
 np.random.seed(seed)
 
-
-'''
-Creating folder to store run
-'''
-
 runs = os.listdir('runs')
 run_number = len(runs)
 run_path = f'runs/run_{run_number}'
 os.mkdir(run_path)
 
-'''
-Dataset creation
-'''
-
-print('Loading data...')
-data = pd.read_pickle(data_path)
 
 # Normalising the dx and dy values
 max = data[["dx", "dy"]].abs().max().max()
@@ -95,7 +82,6 @@ data["dy"] = data["dy"]/max
 
 # Splitting the data into training and validation sets
 training_data, validation_data = train_test_split(data, test_size=0.2, random_state=seed, shuffle=True,)
-
 
 print('Plotting data distribution...')
 fig, ax = plt.subplots(1, 3, figsize=(20, 5))
@@ -120,16 +106,14 @@ ax[1].set_xlim(-1, 1)
 ax[2].set_xlim(-1, 1)
 ax[2].set_ylim(-1,1)
 
-
-
 plt.savefig(f'{run_path}/data_distribution.png')
 plt.close()
 
 train_set = STACKED_dx_dy(training_data, number_of_stacked, n_outputs)
 val_set = STACKED_dx_dy(validation_data, number_of_stacked, n_outputs)
 
-train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
-val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=False)
+train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
+val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=False   , drop_last=True)
 
 print(f'Training set size: {len(train_set)}')
 print(f'Validation set size: {len(val_set)}')
@@ -212,11 +196,8 @@ with torch.no_grad():
         p_predicted.append(outputs)
         p_true.append(labels)
 
-p_predicted = p_predicted[0]
-p_true = p_true[0]
-
-p_predicted = np.array(p_predicted)
-p_true = np.array(p_true)
+p_predicted = np.concatenate(p_predicted, axis=0)
+p_true = np.concatenate(p_true, axis=0)
 
 p_predicted = np.argmax(p_predicted, axis=1)
 p_true = np.argmax(p_true, axis=1) 
@@ -234,6 +215,38 @@ plt.savefig(f'{run_path}/confusion_matrix.png')
 
 
 
+# Creating cross correlation plots
+
+# Creating folder to store the cross correlation plots
+cc_path = f'{run_path}/cross_correlation_plots'
+os.mkdir(cc_path)
+
+filters = model.backbone.conv[0].filters.detach().numpy()
+
+with torch.no_grad():
+    for batch_idx, (x1, x2, x3, labels) in enumerate(tqdm(val_loader, desc="Predicting")):
+        cc = model.create_gcc(x1, x2, x3)
+        cc = cc.detach().numpy()
+        for batch in range(cc.shape[0]):
+            for stack in range(cc.shape[1]):
+                fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+                ax[0].imshow(cc[batch, stack, :, :])
+                ax[0].set_title(f'Batch {batch} Filter {stack}')
+                ax[0].set_aspect('auto')
+                ax[0].set_xlabel('Tau')
+                ax[0].set_ylabel('Time [s]')
+
+                ax[1].plot(filters[stack, 0, :])
+                ax[1].set_title('Filter')
+                ax[1].set_xlabel('Time [s]')
+                ax[1].set_ylabel('Amplitude')
+                fig.tight_layout()
+                plt.savefig(f'{cc_path}/batch_{batch_idx}_{batch}_filter_nr_{stack}.png')
+                plt.close() 
+
+
+
+
 parameters = {
     'data_path': data_path,
     'seed': seed,
@@ -245,10 +258,13 @@ parameters = {
     'num_channels': num_channels,
     'conv_channels': conv_channels,
     'fs': fs,
-    'sig_len': sig_len,
     'sincnet_params': sincnet_params,
     'patience': patience,
-
+    'number_of_stacked': number_of_stacked,
+    'n_outputs': n_outputs,
+    'training_set_size': len(train_set),
+    'validation_set_size': len(val_set),
+    'best_val_loss': best_val_loss,
 }
 
 with open(f'{run_path}/parameters.txt', 'w') as f:

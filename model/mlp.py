@@ -97,3 +97,5 @@ class NGCCPHAT(nn.Module):
         cc = self.linear(cc)
         return cc
     
+
+    

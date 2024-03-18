@@ -55,8 +55,8 @@ class NGCCPHAT(nn.Module):
 
         self.batch_norm = nn.BatchNorm1d((2 * self.max_tau + 1)*self.num_stacked)
         self.leaky_relu = nn.LeakyReLU(0.2)
-
         self.linear = nn.Linear((2 * self.max_tau + 1)*self.num_stacked, n_outputs)
+        
     def forward(self, x1, x2, x3):
 
         batch_size = x1.shape[0]
@@ -100,3 +100,28 @@ class NGCCPHAT(nn.Module):
         cc = F.softmax(cc, dim=1)
         return cc
     
+    def create_gcc(self, x1, x2, x3):
+        batch_size = x1.shape[0]
+        num_stacked = x1.shape[1]
+        length = x1.shape[2]
+
+
+        y1 = torch.zeros((batch_size, self.num_channels,num_stacked, length))
+        y2 = torch.zeros((batch_size, self.num_channels,num_stacked, length))
+        y3 = torch.zeros((batch_size, self.num_channels,num_stacked, length))
+
+        for i in range(num_stacked):
+            y1[:, :, i, :] = self.backbone(x1[:, i, :])
+            y2[:, :, i, :] = self.backbone(x2[:, i, :])
+            y3[:, :, i, :] = self.backbone(x3[:, i, :])
+
+        # GCC-PHAT
+        cc_12 = self.gcc(y1, y2)
+        cc_13 = self.gcc(y1, y3)
+        cc_23 = self.gcc(y2, y3)
+
+        # concatenating the GCC-PHAT outputs from all pairs of microphones.
+        cc = torch.cat((cc_12, cc_13, cc_23), dim=1)
+
+        return cc
+            
