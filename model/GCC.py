@@ -31,5 +31,5 @@ class GCC(nn.Module):
             cc.append(torch.fft.irfft(
                 Gxy * torch.pow(phi, self.beta[i]), n))
         cc = torch.cat(cc, dim=1)
-        cc = torch.cat((cc[:, :, -self.max_tau:], cc[:, :, :self.max_tau+1]), dim=-1)
+        cc = torch.cat((cc[:, :, :,-self.max_tau:], cc[:, :,:,  :self.max_tau+1]), dim=-1)
         return cc  

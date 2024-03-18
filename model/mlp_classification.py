@@ -20,6 +20,7 @@ class NGCCPHAT(nn.Module):
                  conv_channels,
                  sincnet_params,
                  num_stacked,
+                 n_outputs
                  ):
         super().__init__()
 
@@ -54,7 +55,8 @@ class NGCCPHAT(nn.Module):
 
         self.batch_norm = nn.BatchNorm1d((2 * self.max_tau + 1)*self.num_stacked)
         self.leaky_relu = nn.LeakyReLU(0.2)
-        self.linear = nn.Linear((2 * self.max_tau + 1)*self.num_stacked, 2)
+
+        self.linear = nn.Linear((2 * self.max_tau + 1)*self.num_stacked, n_outputs)
     def forward(self, x1, x2, x3):
 
         batch_size = x1.shape[0]
@@ -95,5 +97,6 @@ class NGCCPHAT(nn.Module):
         cc = self.batch_norm(cc)
         cc = self.leaky_relu(cc)
         cc = self.linear(cc)
+        cc = F.softmax(cc, dim=1)
         return cc
     

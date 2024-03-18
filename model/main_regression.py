@@ -26,7 +26,7 @@ data_path = r"data\training_data_sample_1.pkl"
 seed = 42
 
 # Training hyperparams
-batch_size = 32
+batch_size = 4
 epochs = 10
 lr = 0.001         # learning rate
 wd = 0.01          # weight decay
@@ -34,20 +34,18 @@ patience = 5       # Number of epochs to wait for improvement before stopping
 
 # Model parameters
 max_tau = 100       # maximum tau value for GCC-PHAT
-num_channels = 1   # number of channels in final layer of NGCCPHAT backbone
-conv_channels = 32  # number of channels in the convolutional layers of NGCCPHAT backbone
+num_channels = 3    # number of channels in final layer of NGCCPHAT backbone
+conv_channels = 10  # number of channels in the convolutional layers of NGCCPHAT backbone
 fs = 204800         # sampling rate
-sig_len = 1024      # length of snippet used for tdoa estimation
-
-
-number_of_stacked = 1
-
+sig_len = 3000      # length of snippet used for tdoa estimation
+number_of_stacked = 10
+n_outputs = 4
 
 
 
 sincnet_params = {'input_dim': sig_len,
                           'fs': fs,
-                          'cnn_N_filt': [128,   num_channels],
+                          'cnn_N_filt': [10,   num_channels],
                           'cnn_len_filt': [1023,  7],
                           'cnn_max_pool_len': [1, 1],
                           'cnn_use_laynorm_inp': False,
@@ -83,20 +81,29 @@ Dataset creation
 
 print('Loading data...')
 data = pd.read_pickle(data_path)
-data = data[:20]
+data = data[:200]
 training_data, validation_data = train_test_split(data, test_size=0.2, random_state=seed, shuffle=True,)
 
 
 
-"""# plotting the data distribution
+# plotting the data distribution
 print('Plotting data distribution...')
 fig, ax = plt.subplots(1, 3, figsize=(20, 5))
-ax[0].hist(training_data.x, bins=100)
-ax[0].set_title('X')
-ax[1].hist(training_data.y, bins=100)
-ax[1].set_title('Y')
-ax[2].scatter(training_data.x, training_data.y, s=1)
-ax[2].set_title('X vs Y')
+
+ax[0].hist(training_data['dx'], bins=100, alpha=0.5, label='Training')
+ax[0].hist(validation_data['dx'], bins=100, alpha=0.5, label='Validation')
+ax[0].set_title('dx distribution')
+ax[0].legend()
+
+ax[1].hist(training_data['dy'], bins=100, alpha=0.5, label='Training')
+ax[1].hist(validation_data['dy'], bins=100, alpha=0.5, label='Validation')
+ax[1].set_title('dy distribution')  
+ax[1].legend()
+
+ax[2].scatter(training_data['dx'], training_data['dy'], alpha=0.5, label='Training')
+ax[2].scatter(validation_data['dx'], validation_data['dy'], alpha=0.5, label='Validation')  
+ax[2].set_title('dx vs dy')
+ax[2].legend()
 
 ax[0].set_xlim(-1, 1)
 ax[1].set_xlim(-1, 1)
@@ -106,7 +113,7 @@ ax[2].set_ylim(-1,1)
 
 
 plt.savefig(f'{run_path}/data_distribution.png')
-plt.close()"""
+plt.close()
 
 
 train_set = STACKED_dx_dy(training_data, number_of_stacked)
@@ -119,7 +126,7 @@ print(f'Training set size: {len(train_set)}')
 print(f'Validation set size: {len(val_set)}')
 
 
-model = NGCCPHAT(max_tau, num_channels, conv_channels, sincnet_params)
+model = NGCCPHAT(max_tau, num_channels, conv_channels, sincnet_params,number_of_stacked)
 model.eval()
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
@@ -185,7 +192,24 @@ ax.set_yscale('log')
 plt.savefig(f'{run_path}/loss.png')
 plt.close()
 
-# saving all parameters in txt file line by line
+
+# Plotting the predicted vs true values 
+model.eval()
+with torch.no_grad():
+    x1, x2, x3, target = next(iter(val_loader))
+    predicted = model(x1, x2, x3)
+    target = target.numpy()
+    predicted = predicted.numpy()
+    fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+    ax.scatter(target[:,0], target[:,1], alpha=0.5, label='True')
+    ax.scatter(predicted[:,0], predicted[:,1], alpha=0.5, label='Predicted')
+    ax.set_title('Predicted vs True')
+    ax.set_xlabel('dx')
+    ax.set_ylabel('dy')
+    ax.legend()
+    plt.savefig(f'{run_path}/predicted_vs_true.png')
+    plt.close()
+
 
 parameters = {
     'data_path': data_path,

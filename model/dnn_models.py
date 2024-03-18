@@ -190,8 +190,7 @@ class SincNet(nn.Module):
        seq_len = x.shape[-1]
        x = x.view(batch, 1, seq_len)
        for i in range(self.N_cnn_lay):
-         s = x.shape[2]
-         padding = get_pad(size=s, kernel_size=self.cnn_len_filt[i], stride=1, dilation=1)
+         padding = get_pad(size=seq_len, kernel_size=self.cnn_len_filt[i], stride=1, dilation=1)
          x = F.pad(x, pad=padding, mode='circular')
          x = self.drop[i](self.act[i](F.max_pool1d(self.conv[i](x), self.cnn_max_pool_len[i])))
        return x
