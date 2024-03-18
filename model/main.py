@@ -1,9 +1,7 @@
-
 import random
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,7 +10,7 @@ import torch.optim as optim
 from sklearn.model_selection import train_test_split
 
 from mlp import NGCCPHAT
-from dataset import RAW
+from dataset import STACKED_dx_dy
 from GCC import GCC
 
 import matplotlib
@@ -24,24 +22,25 @@ import os
 '''
 Defining all the parameters
 '''
-data_path = r"data/training_data_smaller.pkl"
+data_path = r"data\training_data_sample_1.pkl"
 seed = 42
 
 # Training hyperparams
 batch_size = 32
-epochs = 1
-lr = 0.001  # learning rate
-wd = 0.01  # weight decay
-patience = 5  # Number of epochs to wait for improvement before stopping
+epochs = 10
+lr = 0.001         # learning rate
+wd = 0.01          # weight decay
+patience = 5       # Number of epochs to wait for improvement before stopping
 
 # Model parameters
-max_tau = 100
-num_channels = 10  # number of channels in final layer of NGCCPHAT backbone
-conv_channels = 32
-use_sinc = False
-fs = 204800  # sampling rate
-sig_len = 1024  # length of snippet used for tdoa estimation
+max_tau = 100       # maximum tau value for GCC-PHAT
+num_channels = 1   # number of channels in final layer of NGCCPHAT backbone
+conv_channels = 32  # number of channels in the convolutional layers of NGCCPHAT backbone
+fs = 204800         # sampling rate
+sig_len = 1024      # length of snippet used for tdoa estimation
 
+
+number_of_stacked = 1
 
 
 
@@ -78,7 +77,6 @@ run_number = len(runs)
 run_path = f'runs/run_{run_number}'
 os.mkdir(run_path)
 
-
 '''
 Dataset creation
 '''
@@ -88,16 +86,9 @@ data = pd.read_pickle(data_path)
 data = data[:20]
 training_data, validation_data = train_test_split(data, test_size=0.2, random_state=seed, shuffle=True,)
 
-print('Normalizing data...')
-# normalizing trainin
-training_data.x = (training_data.x - 50)/50
-training_data.y = (training_data.y - 35)/35
 
-# normalizing validation
-validation_data.x = (validation_data.x - 50)/50
-validation_data.y = (validation_data.y - 35)/35
 
-# plotting the data distribution
+"""# plotting the data distribution
 print('Plotting data distribution...')
 fig, ax = plt.subplots(1, 3, figsize=(20, 5))
 ax[0].hist(training_data.x, bins=100)
@@ -115,11 +106,11 @@ ax[2].set_ylim(-1,1)
 
 
 plt.savefig(f'{run_path}/data_distribution.png')
-plt.close()
+plt.close()"""
 
 
-train_set = RAW(training_data, sig_len)
-val_set = RAW(validation_data, sig_len)
+train_set = STACKED_dx_dy(training_data, number_of_stacked)
+val_set = STACKED_dx_dy(validation_data, number_of_stacked)
 
 train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True)
 val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=False)

@@ -6,12 +6,18 @@ class GCC(nn.Module):
     def __init__(self, max_tau):
         super().__init__()
 
-        ''' GCC implementation based on Knapp and Carter,
-        "The Generalized Correlation Method for Estimation of Time Delay",
-        IEEE Trans. Acoust., Speech, Signal Processing, August, 1976 '''
+        '''
+        Descprition
+        - This class is used to create a GCC object
+        - This class is used to calculate the cross correlation of two signals
+        - The cross correlation is calculated using the GCC-PHAT method
+        # How does it handle the batches 
+        - The forward method takes in two signals x and y
+        - The cross correlation is calculated for each signal in the batch
+        '''
 
         self.max_tau = max_tau
-        self.epsilon = 0.000001
+        self.epsilon = 1e-6
         self.beta = np.array([1])
 
     def forward(self, x, y):

@@ -60,11 +60,13 @@ class NGCCPHAT(nn.Module):
     def forward(self, x1, x2, x3):
 
         batch_size = x1.shape[0]
+        length = x1.shape[-1]
 
         # SincNet backbone
         y1 = self.backbone(x1)
         y2 = self.backbone(x2)
         y3 = self.backbone(x3)
+        
 
         # GCC-PHAT
         cc_12 = self.gcc(y1, y2)
