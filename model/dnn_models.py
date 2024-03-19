@@ -25,8 +25,6 @@ def flip(x, dim):
     x = x.view(x.size(0), x.size(1), -1)[:, getattr(torch.arange(x.size(1)-1,
                                                                  -1, -1), ('cpu', 'cuda')[x.is_cuda])().long(), :]
     return x.view(xsize)
-
-
 class SincConv_fast(nn.Module):
     """Sinc-based convolution
     Parameters

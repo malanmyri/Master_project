@@ -31,36 +31,35 @@ Defining all the parameters
 data_path = r"data\training_data_sample_1.pkl"
 print('Loading data...')
 data = pd.read_pickle(data_path)
-data = data[:400]
 
 seed = 42
 
 # Training hyperparams
 batch_size = 4
-epochs = 1
+epochs = 10
 lr = 0.001             # learning rate
 wd = 0.01              # weight decay
 patience = 5           # Number of epochs to wait for improvement before stopping
 
 # Model parameters
 max_tau = 60           # maximum tau value for GCC-PHAT
-num_channels = 3       # number of channels in final layer of NGCCPHAT backbone
-conv_channels = 10     # number of channels in the convolutional layers of NGCCPHAT backbone
+num_channels = 10       # number of channels in final layer of NGCCPHAT backbone
+conv_channels = 15     # number of channels in the convolutional layers of NGCCPHAT backbone
 fs = 204800            # sampling rate
-number_of_stacked = 20 # number of stacked snippets
+number_of_stacked = 40 # number of stacked snippets
 n_outputs = 4          # number of kvadrants classification
 
 
 sincnet_params = {'input_dim': len(data.sensor_1[0]),
                           'fs': fs,
-                          'cnn_N_filt': [10,   num_channels],
+                          'cnn_N_filt': [20,   num_channels],
                           'cnn_len_filt': [1023,  7],
                           'cnn_max_pool_len': [1, 1],
                           'cnn_act': ['leaky_relu', 'linear'],
                           'cnn_drop': [0.0, 0.0],
                           'max_hz': 20000.0,
-                            'low_hz': 100.0,
-                            'min_band_hz': 100.0,
+                          'low_hz': 1000.0,
+                          'min_band_hz': 1000.0,
                           }
 
 # For reproducibility
@@ -131,6 +130,11 @@ validation_loss = []
 best_val_loss = float('inf')
 epochs_no_improve = 0
 
+# Before training starts
+initial_low_hz =  model.backbone.conv[0].low_hz_.data.clone()
+initial_band_hz = model.backbone.conv[0].band_hz_.data.clone()
+
+
 for e in range(epochs):
     train_loss_epoch = 0
     model.train()
@@ -155,6 +159,10 @@ for e in range(epochs):
     current_val_loss = val_loss_epoch / len(val_loader)
     validation_loss.append(current_val_loss)
     print(f'Epoch {e+1}/{epochs} - Training Loss: {training_loss[-1]:.4f} - Validation Loss: {validation_loss[-1]:.4f}')
+
+    delta_low_hz = torch.abs(initial_low_hz - model.backbone.conv[0].low_hz_.data)
+    delta_band_hz = torch.abs(initial_band_hz - model.backbone.conv[0].band_hz_.data)
+    print(f"Epoch {e}: Δ Low Hz = {delta_low_hz.mean().item()}, Δ Band Hz = {delta_band_hz.mean().item()}")
 
     # Early stopping logic
     if current_val_loss < best_val_loss:
@@ -216,22 +224,20 @@ plt.savefig(f'{run_path}/confusion_matrix.png')
 
 
 # Creating cross correlation plots
-
-# Creating folder to store the cross correlation plots
 cc_path = f'{run_path}/cross_correlation_plots'
 os.mkdir(cc_path)
 
 filters = model.backbone.conv[0].filters.detach().numpy()
-
 with torch.no_grad():
     for batch_idx, (x1, x2, x3, labels) in enumerate(tqdm(val_loader, desc="Predicting")):
         cc = model.create_gcc(x1, x2, x3)
         cc = cc.detach().numpy()
         for batch in range(cc.shape[0]):
             for stack in range(cc.shape[1]):
-                fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+                fig, ax = plt.subplots(2, 1, figsize=(10, 5))
+                ax = ax.ravel()
                 ax[0].imshow(cc[batch, stack, :, :])
-                ax[0].set_title(f'Batch {batch} Filter {stack}')
+                ax[0].set_title(f'GCC for Filter nr {stack}')
                 ax[0].set_aspect('auto')
                 ax[0].set_xlabel('Tau')
                 ax[0].set_ylabel('Time [s]')
@@ -241,9 +247,30 @@ with torch.no_grad():
                 ax[1].set_xlabel('Time [s]')
                 ax[1].set_ylabel('Amplitude')
                 fig.tight_layout()
-                plt.savefig(f'{cc_path}/batch_{batch_idx}_{batch}_filter_nr_{stack}.png')
+                plt.savefig(f'{cc_path}/GCC_for_filter_nr_{stack}.png')
                 plt.close() 
+            break
 
+
+# Calculating the frequency response of the filters 
+freq_path = f'{run_path}/frequency_response'
+os.mkdir(freq_path)
+
+freq_response = []
+sampling_rate = 204800
+for i in range(filters.shape[0]):
+    freq_response.append(np.abs(np.fft.rfft(filters[i, 0, :])))
+
+freq = np.fft.rfftfreq(filters.shape[2], d=1/sampling_rate)
+for i in range(len(freq_response)):
+    fig, ax = plt.subplots(1,1, figsize=(10,10))
+    ax.plot(freq, 20*np.log10(freq_response[i]))
+    ax.set_title(f'Filter {i}')
+    ax.set_xlabel('Frequency [Hz]')
+    ax.set_ylabel('Amplitude [dB]')
+    fig.tight_layout()
+    plt.savefig(f'{freq_path}/filter_{i}_frequency_response.png')
+    plt.close()
 
 
 

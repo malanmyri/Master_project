@@ -121,7 +121,7 @@ class NGCCPHAT(nn.Module):
         cc_23 = self.gcc(y2, y3)
 
         # concatenating the GCC-PHAT outputs from all pairs of microphones.
-        cc = torch.cat((cc_12, cc_13, cc_23), dim=1)
+        cc = torch.cat((cc_12, cc_13, cc_23), dim=3)
 
         return cc
             
