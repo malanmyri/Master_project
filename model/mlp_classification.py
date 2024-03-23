@@ -3,16 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from GCC import GCC
-
-
 def get_pad(size, kernel_size, stride=1, dilation=1):
     effective_kernel_size = (kernel_size - 1) * dilation + 1
     pad_total = max(0, (size - 1) * stride + effective_kernel_size - size)
     pad_before = pad_total // 2
     pad_after = pad_total - pad_before
     return (pad_before, pad_after)
-
-
 class NGCCPHAT(nn.Module):
     def __init__(self, 
                  max_tau, 
@@ -20,8 +16,8 @@ class NGCCPHAT(nn.Module):
                  conv_channels,
                  sincnet_params,
                  num_stacked,
-                 n_outputs
-                 ):
+                 n_outputs, 
+                 cuda = False):
         super().__init__()
 
         '''
@@ -43,7 +39,7 @@ class NGCCPHAT(nn.Module):
         self.backbone = SincNet(sincnet_params)
         self.mlp_kernels = [(self.num_stacked, 11), (self.num_stacked, 9) , ( self.num_stacked, 7)]
         self.mlp_kernels = [11, 9, 7]
-        self.channels = [num_channels*3, conv_channels, conv_channels, conv_channels]
+        self.channels = [num_channels, conv_channels, conv_channels, conv_channels]
         self.final_kernel = 5
         self.gcc = GCC(max_tau = max_tau)
         self.mlp = nn.ModuleList([nn.Sequential(
@@ -53,9 +49,10 @@ class NGCCPHAT(nn.Module):
                 nn.Dropout(0.5)) for i, k in enumerate(self.mlp_kernels)])
         self.final_conv = nn.Conv1d(conv_channels, 1, kernel_size=self.final_kernel)
 
-        self.batch_norm = nn.BatchNorm1d((2 * self.max_tau + 1)*self.num_stacked)
+        self.batch_norm = nn.BatchNorm1d((2 * self.max_tau + 1)*self.num_stacked*3)
         self.leaky_relu = nn.LeakyReLU(0.2)
-        self.linear = nn.Linear((2 * self.max_tau + 1)*self.num_stacked, n_outputs)
+        self.linear = nn.Linear((2 * self.max_tau + 1)*self.num_stacked*3, n_outputs) # multiplying with 3 since we have three sensors
+        self.cuda = cuda
         
     def forward(self, x1, x2, x3):
 
@@ -80,9 +77,14 @@ class NGCCPHAT(nn.Module):
         cc_23 = self.gcc(y2, y3)
 
         # concatenating the GCC-PHAT outputs from all pairs of microphones.
-        cc = torch.cat((cc_12, cc_13, cc_23), dim=1)
+        cc = torch.cat((cc_12, cc_13, cc_23), dim=2)
         cc = cc.view(cc.shape[0], cc.shape[1], cc.shape[2]*cc.shape[3]) # Flatten the tensor
+        # shape[2] is the number of stacked vectors * 3
+        # shape 3 is the truncated window length
+
         
+        if self.cuda:
+            cc = cc.cuda()
         for k, layer in enumerate(self.mlp):
             s = cc.shape[2]
             padding = get_pad(

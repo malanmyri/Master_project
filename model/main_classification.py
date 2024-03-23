@@ -28,39 +28,52 @@ import os
 '''
 Defining all the parameters
 '''
-data_path = r"data\training_data_sample_1.pkl"
+data_path = r"data\training_data_sample_1_window_1000.pkl"
 print('Loading data...')
 data = pd.read_pickle(data_path)
 
 seed = 42
 
 # Training hyperparams
-batch_size = 4
-epochs = 10
+batch_size = 5
+epochs = 1
 lr = 0.001             # learning rate
 wd = 0.01              # weight decay
 patience = 5           # Number of epochs to wait for improvement before stopping
 
 # Model parameters
-max_tau = 60           # maximum tau value for GCC-PHAT
-num_channels = 10       # number of channels in final layer of NGCCPHAT backbone
-conv_channels = 15     # number of channels in the convolutional layers of NGCCPHAT backbone
-fs = 204800            # sampling rate
-number_of_stacked = 40 # number of stacked snippets
-n_outputs = 4          # number of kvadrants classification
+max_tau = 25            # maximum tau value for GCC-PHAT
+num_channels = 5       # number of outputs from the sincnet backbone
+num_filters = 10        # Number of sinc filters in the first conv layer in the backbone
+conv_channels = 10      # number of convolutional filters in the MLP layers 
+fs = 204800             # sampling rate
+number_of_stacked = 5   # number of stacked snippets
+n_outputs = 4           # number of kvadrants classification
+
 
 
 sincnet_params = {'input_dim': len(data.sensor_1[0]),
                           'fs': fs,
-                          'cnn_N_filt': [20,   num_channels],
-                          'cnn_len_filt': [1023,  7],
+                          'cnn_N_filt': [num_filters, num_channels],
+                          'cnn_len_filt': [1023, 5],
                           'cnn_max_pool_len': [1, 1],
                           'cnn_act': ['leaky_relu', 'linear'],
-                          'cnn_drop': [0.0, 0.0],
-                          'max_hz': 20000.0,
+                          'cnn_drop': [0.3, 0.3],
+                          'max_hz': 30000.0,
                           'low_hz': 1000.0,
-                          'min_band_hz': 1000.0,
-                          }
+                          'min_band_hz': 5000.0,
+                          }  
+
+"""
+input_dim: This specifies the length of the input signals, i.e., the number of samples in each input signal. 
+fs: Sampling frequency. It is critical for SincNet because the filter frequencies are defined in the context of the sampling rate.
+cnn_N_filt: A list specifying the number of filters (or neurons) in each convolutional layer of the SincNet.
+cnn_len_filt: Defines the length of each filter in the convolutional layers. The first layer in the SincNet determines the frequency resolution of the filter.
+cnn_max_pool_len: Max-pooling is used to reduce the dimensionality of the input volume for the next convolutional layer. Your configuration specifies no max-pooling ([1, 1]), meaning each convolutional layer's output will retain its original size.
+cnn_act: Activation functions for each convolutional layer. The first layer uses leaky_relu, introducing non-linearity while attempting to fix the "dying ReLU" problem. The next layer uses a linear activation, essentially meaning no activation function is applied, and the raw output of the convolution is used.
+cnn_drop: Dropout rates for each convolutional layer, a regularization technique to prevent overfitting by randomly setting a fraction of input units to 0 at each update during training time. You've set this to [0.0, 0.0], meaning dropout is not used in any layer.
+max_hz, low_hz, min_band_hz: These parameters specifically configure the first layer's sinc filters in SincNet. max_hz and low_hz define the upper and lower frequency bounds for the filters, while min_band_hz specifies the minimum bandwidth for each filter.
+"""
 
 # For reproducibility
 torch.manual_seed(seed)
@@ -118,7 +131,7 @@ print(f'Training set size: {len(train_set)}')
 print(f'Validation set size: {len(val_set)}')
 
 
-model = NGCCPHAT(max_tau, num_channels, conv_channels, sincnet_params,number_of_stacked, n_outputs)
+model = NGCCPHAT(max_tau, num_channels, conv_channels, sincnet_params, number_of_stacked, n_outputs)
 model.eval()
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
@@ -162,7 +175,7 @@ for e in range(epochs):
 
     delta_low_hz = torch.abs(initial_low_hz - model.backbone.conv[0].low_hz_.data)
     delta_band_hz = torch.abs(initial_band_hz - model.backbone.conv[0].band_hz_.data)
-    print(f"Epoch {e}: Δ Low Hz = {delta_low_hz.mean().item()}, Δ Band Hz = {delta_band_hz.mean().item()}")
+    print(f"Epoch {e}: Δ Low Hz = {delta_low_hz.abs().sum().item()}, Δ Band Hz = {delta_band_hz.abs().sum().item()}")
 
     # Early stopping logic
     if current_val_loss < best_val_loss:
@@ -210,7 +223,8 @@ p_true = np.concatenate(p_true, axis=0)
 p_predicted = np.argmax(p_predicted, axis=1)
 p_true = np.argmax(p_true, axis=1) 
 
-cm = confusion_matrix(p_true, p_predicted) 
+labels = np.arange(n_outputs).astype(int)
+cm = confusion_matrix(p_true, p_predicted, labels = labels) 
 fig, ax = plt.subplots(1, 1, figsize=(10, 10))
 sns.heatmap(cm, annot=True, fmt="d", cmap='viridis', ax=ax)
 
@@ -228,32 +242,50 @@ cc_path = f'{run_path}/cross_correlation_plots'
 os.mkdir(cc_path)
 
 filters = model.backbone.conv[0].filters.detach().numpy()
+
+dt = len(data.sensor_1[0]) * 1/ fs
+time = np.arange(0, dt*number_of_stacked, dt)
+time_shift = np.arange(-max_tau, max_tau+1) * 1/fs
 with torch.no_grad():
     for batch_idx, (x1, x2, x3, labels) in enumerate(tqdm(val_loader, desc="Predicting")):
         cc = model.create_gcc(x1, x2, x3)
         cc = cc.detach().numpy()
         for batch in range(cc.shape[0]):
             for stack in range(cc.shape[1]):
-                fig, ax = plt.subplots(2, 1, figsize=(10, 5))
-                ax = ax.ravel()
-                ax[0].imshow(cc[batch, stack, :, :])
-                ax[0].set_title(f'GCC for Filter nr {stack}')
-                ax[0].set_aspect('auto')
-                ax[0].set_xlabel('Tau')
-                ax[0].set_ylabel('Time [s]')
+                fig, ax = plt.subplots(1, 3, figsize=(30, 10))
+                
+                im0 = ax[0].pcolormesh(time_shift*1000 , time*1000, cc[batch, stack, :, :len(time_shift)])
+                im1 = ax[1].pcolormesh(time_shift*1000 , time*1000, cc[batch, stack, :, len(time_shift):2*len(time_shift)])
+                im2 = ax[2].pcolormesh(time_shift*1000 , time*1000, cc[batch, stack, :, 2*len(time_shift):])
 
-                ax[1].plot(filters[stack, 0, :])
-                ax[1].set_title('Filter')
-                ax[1].set_xlabel('Time [s]')
-                ax[1].set_ylabel('Amplitude')
+                fig.colorbar(im0, ax=ax[0])
+                fig.colorbar(im1, ax=ax[1])
+                fig.colorbar(im2, ax=ax[2])
+
+                ax[0].set_title(f'GCC12 for Filter nr {stack}')
+                ax[1].set_title(f'GCC13 for Filter nr {stack}')
+                ax[2].set_title(f'GCC23 for Filter nr {stack}')
+
+                ax[0].set_aspect('auto')
+                ax[1].set_aspect('auto')
+                ax[2].set_aspect('auto')
+
+                ax[0].set_xlabel('Time delay [ms]')
+                ax[1].set_xlabel('Time delay [ms]')
+                ax[2].set_xlabel('Time delay [ms]')
+
+                ax[0].set_ylabel('Time [ms]')
+                ax[1].set_ylabel('Time [ms]')
+                ax[2].set_ylabel('Time [ms]')
                 fig.tight_layout()
-                plt.savefig(f'{cc_path}/GCC_for_filter_nr_{stack}.png')
+                
+                plt.savefig(f'{cc_path}/GCC_for_filter_output_nr{stack}.png')
                 plt.close() 
             break
 
 
-# Calculating the frequency response of the filters 
-freq_path = f'{run_path}/frequency_response'
+# Calculating the frequency response of the filters
+freq_path = f'{run_path}/filters'
 os.mkdir(freq_path)
 
 freq_response = []
@@ -262,14 +294,26 @@ for i in range(filters.shape[0]):
     freq_response.append(np.abs(np.fft.rfft(filters[i, 0, :])))
 
 freq = np.fft.rfftfreq(filters.shape[2], d=1/sampling_rate)
+
 for i in range(len(freq_response)):
-    fig, ax = plt.subplots(1,1, figsize=(10,10))
-    ax.plot(freq, 20*np.log10(freq_response[i]))
-    ax.set_title(f'Filter {i}')
-    ax.set_xlabel('Frequency [Hz]')
-    ax.set_ylabel('Amplitude [dB]')
+    fig, ax = plt.subplots(1,2, figsize=(10,10))
+    f_0 = model.backbone.conv[0].low_hz_.data[i].item()
+    delta_f = model.backbone.conv[0].band_hz_.data[i].item()
+
+    ax[0].plot(freq, 20*np.log10(freq_response[i]))
+    ax[0].set_title(f'Frequency Response for filter {i}')
+    ax[0].set_xlabel('Frequency [Hz]')
+    ax[0].set_ylabel('Amplitude [dB]')
+
+    ax[1].plot(filters[i, 0, :])
+    ax[1].set_title(f'Impulse Response for filter{i}')
+    ax[1].set_xlabel('Samples')
+    ax[1].set_ylabel('Amplitude')
+
+    fig.suptitle(f'Filter {i} - f_0: {f_0:.2f} Hz, Δf: {delta_f:.2f} Hz')
+
     fig.tight_layout()
-    plt.savefig(f'{freq_path}/filter_{i}_frequency_response.png')
+    plt.savefig(f'{freq_path}/filter_{i}.png')
     plt.close()
 
 
