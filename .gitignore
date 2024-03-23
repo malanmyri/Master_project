@@ -4,3 +4,5 @@
 *.pth
 *.npy
 *.txt
+*.MOV
+*.csv
