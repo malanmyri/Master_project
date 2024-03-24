@@ -38,8 +38,10 @@ class NGCCPHAT(nn.Module):
         self.num_channels = num_channels
         self.backbone = SincNet(sincnet_params)
         self.mlp_kernels = [(self.num_stacked, 11), (self.num_stacked, 9) , ( self.num_stacked, 7)]
-        self.mlp_kernels = [11, 9, 7]
-        self.channels = [num_channels, conv_channels, conv_channels, conv_channels]
+        #self.mlp_kernels = [11, 9, 7]
+        #self.channels = [num_channels, conv_channels, conv_channels, conv_channels]
+        self.channels = [num_channels, conv_channels]
+        self.mlp_kernels = [11]
         self.final_kernel = 5
         self.gcc = GCC(max_tau = max_tau)
         self.mlp = nn.ModuleList([nn.Sequential(
