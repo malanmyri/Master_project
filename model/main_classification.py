@@ -16,7 +16,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-from mlp_classification import NGCCPHAT
+from mlp_classification import SincNetGCC
 from dataset_classification import pre_stacked
 
 import matplotlib
@@ -28,7 +28,7 @@ import os
 '''
 Defining all the parameters
 '''
-data_path = r"data\processed_data\all_data_filtered.pkl"
+data_path = r"data\processed_data\all_data_filtered_velocity_0.01_radius_20_num_sectors_4.pkl"
 print('Loading data...')
 data = pd.read_pickle(data_path)
 data.reset_index(drop=True, inplace=True)
@@ -37,49 +37,28 @@ data.reset_index(drop=True, inplace=True)
 
 # balance the data by including the same percentage of each value for the direction class. 
 data = data.groupby('direction_label').apply(lambda x: x.sample(data.direction_label.value_counts().min(), random_state=42)).reset_index(drop=True)
-data = data.sample(frac=0.3).reset_index(drop=True)
+data = data.sample(frac=0.1).reset_index(drop=True)
 seed = 42
 
 # Training hyperparams
 batch_size = 32
 epochs = 100
 lr = 0.01               # learning rate
-wd = 0.03               # weight decay
-patience = 10           # Number of epochs to wait for improvement before stopping
+wd = 0.01               # weight decay
+patience = 3           # Number of epochs to wait for improvement before stopping
 
 # Model parameters
-max_tau = 40            # maximum tau value for GCC-PHAT
-num_channels = 30       # number of outputs from the sincnet backbone
+max_tau = 30            # maximum tau value for GCC-PHAT
 num_filters = 30        # Number of sinc filters in the first conv layer in the backbone
-conv_channels = 10      # number of convolutional filters in the MLP layers 
-fs = 204800             # sampling rate
+num_channels = 10       # Number of convolutional filters in the MLP layers
+activation = 'leaky_relu'
+max_cut_off_frequency = 30000.0
+min_cut_off_frequency = 1000.0
+min_band_width = 1000.0
+num_taps = 1001
+sampling_rate = 204800
 number_of_stacked = len(data.sensor_1.values[0])  # number of stacked samples
 n_outputs = 4           # number of output classes
-num_taps = 1001
-
-sincnet_params = {'input_dim': len(data.sensor_1.values[0][0]),
-                          'fs': fs,
-                          'cnn_N_filt': [num_filters, num_channels],
-                          'cnn_len_filt': [num_taps, 5],
-                          'cnn_max_pool_len': [1, 1],
-                          'cnn_act': ['leaky_relu', 'linear'],
-                          'cnn_drop': [0.3, 0.3],
-                          'max_hz': 30000.0,
-                          'low_hz': 1000.0,
-                          'min_band_hz': 1000.0,
-                          }  
-
-sincnet_params = {'input_dim': len(data.sensor_1.values[0][0]),
-                          'fs': fs,
-                          'cnn_N_filt': [num_filters],
-                          'cnn_len_filt': [num_taps],
-                          'cnn_max_pool_len': [1],
-                          'cnn_act': ['leaky_relu'],
-                          'cnn_drop': [0.3],
-                          'max_hz': 30000.0,
-                          'low_hz': 1000.0,
-                          'min_band_hz': 1000.0,
-                          }  
 
 
 # For reproducibility
@@ -138,7 +117,20 @@ print(f'Training set size: {len(train_set)}')
 print(f'Validation set size: {len(val_set)}')
 
 
-model = NGCCPHAT(max_tau, num_channels, conv_channels, sincnet_params, number_of_stacked, n_outputs)
+model = SincNetGCC(
+    max_tau = max_tau,
+    num_filters = num_filters,
+    num_channels = num_channels,
+    activation = activation,
+    max_fc = max_cut_off_frequency,
+    min_fc = min_cut_off_frequency,
+    min_band = min_band_width,
+    num_taps = num_taps,
+    fs = sampling_rate,
+    num_stacked = number_of_stacked,
+    n_outputs = n_outputs,
+)
+
 model.eval()
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs )
@@ -151,8 +143,8 @@ best_val_loss = float('inf')
 epochs_no_improve = 0
 
 # Before training starts
-initial_low_hz =  model.backbone.conv[0].lower_cut_off_frequency.data.clone()
-initial_band_hz = model.backbone.conv[0].band_widths.data.clone()
+initial_low_hz =  model.backbone.lower_cut_off_frequency.data.clone()
+initial_band_hz = model.backbone.band_widths.data.clone()
 
 low_cut_off = [initial_low_hz]
 band_width = [initial_band_hz]
@@ -173,8 +165,8 @@ for e in range(epochs):
     scheduler.step()
 
     # Adding the current low cut off and band width to the list
-    low_cut_off.append(model.backbone.conv[0].lower_cut_off_frequency.data.clone()) 
-    band_width.append(model.backbone.conv[0].band_widths.data.clone())
+    low_cut_off.append(model.backbone.lower_cut_off_frequency.data.clone()) 
+    band_width.append(model.backbone.band_widths.data.clone())
 
 
     model.eval()
@@ -247,11 +239,10 @@ plt.savefig(f'{run_path}/confusion_matrix.png')
 cc_path = f'{run_path}/cross_correlation_plots'
 os.mkdir(cc_path)
 
-filters = model.backbone.conv[0].filters.detach().numpy()
-
-dt = len(data.sensor_1[0]) * 1/ fs
+filters = model.backbone.filters.detach().numpy()
+dt = len(data.sensor_1[0]) * 1/ sampling_rate
 time = np.arange(0, dt*number_of_stacked, dt)
-time_shift = np.arange(-max_tau, max_tau+1) * 1/fs
+time_shift = np.arange(-max_tau, max_tau+1) * 1/sampling_rate
 with torch.no_grad():
     for batch_idx, (x1, x2, x3, labels) in enumerate(tqdm(val_loader, desc="Predicting")):
         cc = model.create_gcc(x1, x2, x3)
@@ -302,8 +293,8 @@ for i in range(filters.shape[0]):
 freq = np.fft.rfftfreq(filters.shape[2], d=1/sampling_rate)
 for i in range(len(freq_response)):
     fig, ax = plt.subplots(1,2, figsize=(10,10))
-    f_0 = model.backbone.conv[0].lower_cut_off_frequency.data[i].item()
-    delta_f = model.backbone.conv[0].band_widths.data[i].item()
+    f_0 = model.backbone.lower_cut_off_frequency.data[i].item()
+    delta_f = model.backbone.band_widths.data[i].item()
 
     ax[0].plot(freq, 20*np.log10(freq_response[i]))
     ax[0].set_title(f'Frequency Response for filter {i}')
@@ -362,9 +353,7 @@ parameters = {
     'max_tau': max_tau,
     'num_channels': num_channels,
     'num_filters': num_filters,
-    'conv_channels': conv_channels,
-    'sampling rate': fs,
-    'sincnet_params': sincnet_params,
+    'sampling rate': sampling_rate,
     'patience': patience,
     'number_of_stacked': number_of_stacked,
     'n_outputs': n_outputs,
