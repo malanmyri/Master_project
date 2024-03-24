@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 
 from mlp_classification import NGCCPHAT
-from dataset_classification import STACKED_dx_dy
+from dataset_classification import pre_stacked
 
 import matplotlib
 matplotlib.use('TkAgg')  # Set the backend to TkAgg, or choose another appropriate backend
@@ -28,52 +28,59 @@ import os
 '''
 Defining all the parameters
 '''
-data_path = r"data\training_data_sample_1_window_1000.pkl"
+data_path = r"data\processed_data\all_data_filtered.pkl"
 print('Loading data...')
 data = pd.read_pickle(data_path)
+data.reset_index(drop=True, inplace=True)
+# shuffling the data
+#data = data.sample(frac=0.3).reset_index(drop=True)  # Shuffle the data
 
+# balance the data by including the same percentage of each value for the direction class. 
+data = data.groupby('direction_label').apply(lambda x: x.sample(data.direction_label.value_counts().min(), random_state=42)).reset_index(drop=True)
+data = data.sample(frac=0.3).reset_index(drop=True)
 seed = 42
 
 # Training hyperparams
-batch_size = 5
-epochs = 1
-lr = 0.001             # learning rate
-wd = 0.01              # weight decay
-patience = 5           # Number of epochs to wait for improvement before stopping
+batch_size = 32
+epochs = 100
+lr = 0.01               # learning rate
+wd = 0.03               # weight decay
+patience = 10           # Number of epochs to wait for improvement before stopping
 
 # Model parameters
-max_tau = 25            # maximum tau value for GCC-PHAT
-num_channels = 5       # number of outputs from the sincnet backbone
-num_filters = 10        # Number of sinc filters in the first conv layer in the backbone
+max_tau = 40            # maximum tau value for GCC-PHAT
+num_channels = 30       # number of outputs from the sincnet backbone
+num_filters = 30        # Number of sinc filters in the first conv layer in the backbone
 conv_channels = 10      # number of convolutional filters in the MLP layers 
 fs = 204800             # sampling rate
-number_of_stacked = 5   # number of stacked snippets
-n_outputs = 4           # number of kvadrants classification
+number_of_stacked = len(data.sensor_1.values[0])  # number of stacked samples
+n_outputs = 4           # number of output classes
+num_taps = 1001
 
-
-
-sincnet_params = {'input_dim': len(data.sensor_1[0]),
+sincnet_params = {'input_dim': len(data.sensor_1.values[0][0]),
                           'fs': fs,
                           'cnn_N_filt': [num_filters, num_channels],
-                          'cnn_len_filt': [1023, 5],
+                          'cnn_len_filt': [num_taps, 5],
                           'cnn_max_pool_len': [1, 1],
                           'cnn_act': ['leaky_relu', 'linear'],
                           'cnn_drop': [0.3, 0.3],
                           'max_hz': 30000.0,
                           'low_hz': 1000.0,
-                          'min_band_hz': 5000.0,
+                          'min_band_hz': 1000.0,
                           }  
 
-"""
-input_dim: This specifies the length of the input signals, i.e., the number of samples in each input signal. 
-fs: Sampling frequency. It is critical for SincNet because the filter frequencies are defined in the context of the sampling rate.
-cnn_N_filt: A list specifying the number of filters (or neurons) in each convolutional layer of the SincNet.
-cnn_len_filt: Defines the length of each filter in the convolutional layers. The first layer in the SincNet determines the frequency resolution of the filter.
-cnn_max_pool_len: Max-pooling is used to reduce the dimensionality of the input volume for the next convolutional layer. Your configuration specifies no max-pooling ([1, 1]), meaning each convolutional layer's output will retain its original size.
-cnn_act: Activation functions for each convolutional layer. The first layer uses leaky_relu, introducing non-linearity while attempting to fix the "dying ReLU" problem. The next layer uses a linear activation, essentially meaning no activation function is applied, and the raw output of the convolution is used.
-cnn_drop: Dropout rates for each convolutional layer, a regularization technique to prevent overfitting by randomly setting a fraction of input units to 0 at each update during training time. You've set this to [0.0, 0.0], meaning dropout is not used in any layer.
-max_hz, low_hz, min_band_hz: These parameters specifically configure the first layer's sinc filters in SincNet. max_hz and low_hz define the upper and lower frequency bounds for the filters, while min_band_hz specifies the minimum bandwidth for each filter.
-"""
+sincnet_params = {'input_dim': len(data.sensor_1.values[0][0]),
+                          'fs': fs,
+                          'cnn_N_filt': [num_filters],
+                          'cnn_len_filt': [num_taps],
+                          'cnn_max_pool_len': [1],
+                          'cnn_act': ['leaky_relu'],
+                          'cnn_drop': [0.3],
+                          'max_hz': 30000.0,
+                          'low_hz': 1000.0,
+                          'min_band_hz': 1000.0,
+                          }  
+
 
 # For reproducibility
 torch.manual_seed(seed)
@@ -121,8 +128,8 @@ ax[2].set_ylim(-1,1)
 plt.savefig(f'{run_path}/data_distribution.png')
 plt.close()
 
-train_set = STACKED_dx_dy(training_data, number_of_stacked, n_outputs)
-val_set = STACKED_dx_dy(validation_data, number_of_stacked, n_outputs)
+train_set = pre_stacked(training_data)
+val_set = pre_stacked(validation_data)
 
 train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
 val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=False   , drop_last=True)
@@ -134,7 +141,7 @@ print(f'Validation set size: {len(val_set)}')
 model = NGCCPHAT(max_tau, num_channels, conv_channels, sincnet_params, number_of_stacked, n_outputs)
 model.eval()
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs )
 loss_fn = nn.CrossEntropyLoss()
 
 training_loss = []
@@ -144,8 +151,12 @@ best_val_loss = float('inf')
 epochs_no_improve = 0
 
 # Before training starts
-initial_low_hz =  model.backbone.conv[0].low_hz_.data.clone()
-initial_band_hz = model.backbone.conv[0].band_hz_.data.clone()
+initial_low_hz =  model.backbone.conv[0].lower_cut_off_frequency.data.clone()
+initial_band_hz = model.backbone.conv[0].band_widths.data.clone()
+
+low_cut_off = [initial_low_hz]
+band_width = [initial_band_hz]
+
 
 
 for e in range(epochs):
@@ -161,6 +172,11 @@ for e in range(epochs):
     training_loss.append(train_loss_epoch / len(train_loader))
     scheduler.step()
 
+    # Adding the current low cut off and band width to the list
+    low_cut_off.append(model.backbone.conv[0].lower_cut_off_frequency.data.clone()) 
+    band_width.append(model.backbone.conv[0].band_widths.data.clone())
+
+
     model.eval()
     val_loss_epoch = 0
     for batch_idx, (x1, x2, x3, target) in enumerate(tqdm(val_loader, desc=f"Epoch {e+1}/{epochs} Validation")):
@@ -172,26 +188,17 @@ for e in range(epochs):
     current_val_loss = val_loss_epoch / len(val_loader)
     validation_loss.append(current_val_loss)
     print(f'Epoch {e+1}/{epochs} - Training Loss: {training_loss[-1]:.4f} - Validation Loss: {validation_loss[-1]:.4f}')
-
-    delta_low_hz = torch.abs(initial_low_hz - model.backbone.conv[0].low_hz_.data)
-    delta_band_hz = torch.abs(initial_band_hz - model.backbone.conv[0].band_hz_.data)
-    print(f"Epoch {e}: Δ Low Hz = {delta_low_hz.abs().sum().item()}, Δ Band Hz = {delta_band_hz.abs().sum().item()}")
-
-    # Early stopping logic
+    
     if current_val_loss < best_val_loss:
         best_val_loss = current_val_loss
         epochs_no_improve = 0
-        # Optional: Save model here if current validation loss has improved
+        torch.save(model.state_dict(), f'{run_path}/model.pth')
     else:
         epochs_no_improve += 1
         if epochs_no_improve == patience:
             print(f'Early stopping triggered after epoch {e+1}. No improvement in validation loss for {patience} consecutive epochs.')
-            break  # Break out of the loop
+            break 
 
-
-# Saving all parameters
-
-torch.save(model.state_dict(), f'{run_path}/model.pth')
 torch.save(optimizer.state_dict(), f'{run_path}/optimizer.pth')
 torch.save(scheduler.state_dict(), f'{run_path}/scheduler.pth')
 
@@ -202,12 +209,11 @@ ax.plot(validation_loss, label='Validation Loss')
 ax.set_xlabel('Epoch')
 ax.set_ylabel('Loss')
 ax.legend()
-ax.set_yscale('log')
 plt.savefig(f'{run_path}/loss.png')
 plt.close()
 
 
-# 3. Confusion matrix
+# Confusion matrix
 p_predicted = []
 p_true = []
 
@@ -237,7 +243,7 @@ plt.savefig(f'{run_path}/confusion_matrix.png')
 
 
 
-# Creating cross correlation plots
+# Cross Correlation
 cc_path = f'{run_path}/cross_correlation_plots'
 os.mkdir(cc_path)
 
@@ -284,7 +290,7 @@ with torch.no_grad():
             break
 
 
-# Calculating the frequency response of the filters
+# Frequency response of the filters
 freq_path = f'{run_path}/filters'
 os.mkdir(freq_path)
 
@@ -294,11 +300,10 @@ for i in range(filters.shape[0]):
     freq_response.append(np.abs(np.fft.rfft(filters[i, 0, :])))
 
 freq = np.fft.rfftfreq(filters.shape[2], d=1/sampling_rate)
-
 for i in range(len(freq_response)):
     fig, ax = plt.subplots(1,2, figsize=(10,10))
-    f_0 = model.backbone.conv[0].low_hz_.data[i].item()
-    delta_f = model.backbone.conv[0].band_hz_.data[i].item()
+    f_0 = model.backbone.conv[0].lower_cut_off_frequency.data[i].item()
+    delta_f = model.backbone.conv[0].band_widths.data[i].item()
 
     ax[0].plot(freq, 20*np.log10(freq_response[i]))
     ax[0].set_title(f'Frequency Response for filter {i}')
@@ -317,18 +322,48 @@ for i in range(len(freq_response)):
     plt.close()
 
 
+# Plotting a heatmap of the low cut off and band width
+
+low_cut_off = torch.stack(low_cut_off).detach().numpy()[:,:,0]
+band_width = torch.stack(band_width).detach().numpy()[:,:,0]
+
+fig, ax = plt.subplots(1, 2, figsize=(20, 10))
+im0 = ax[0].imshow(low_cut_off.T, aspect='auto')
+im1 = ax[1].imshow(band_width.T, aspect='auto')
+
+ax[0].set_title('Low cut off frequency')
+ax[1].set_title('Band width')
+
+ax[0].set_xlabel('Epoch')
+ax[1].set_xlabel('Epoch')
+
+ax[0].set_ylabel('Filter nr')
+ax[1].set_ylabel('Filter nr')
+
+fig.colorbar(im0, ax=ax[0])
+fig.colorbar(im1, ax=ax[1])
+
+fig.tight_layout()
+plt.savefig(f'{run_path}/low_cut_off_band_width.png')
+plt.close()
+
+
+# Saving the parameters
+
+
 
 parameters = {
     'data_path': data_path,
     'seed': seed,
     'batch_size': batch_size,
     'epochs': epochs,
-    'lr': lr,
-    'wd': wd,
+    'learning rate': lr,
+    'weight decay': wd,
     'max_tau': max_tau,
     'num_channels': num_channels,
+    'num_filters': num_filters,
     'conv_channels': conv_channels,
-    'fs': fs,
+    'sampling rate': fs,
     'sincnet_params': sincnet_params,
     'patience': patience,
     'number_of_stacked': number_of_stacked,
@@ -336,6 +371,8 @@ parameters = {
     'training_set_size': len(train_set),
     'validation_set_size': len(val_set),
     'best_val_loss': best_val_loss,
+    'early_stopping': epochs_no_improve,
+
 }
 
 with open(f'{run_path}/parameters.txt', 'w') as f:
@@ -343,7 +380,6 @@ with open(f'{run_path}/parameters.txt', 'w') as f:
         f.write(f'{key}: {value}\n')
 
 
-# Saving the loss in a numpy file
 np.save(f'{run_path}/training_loss.npy', np.array(training_loss))
 np.save(f'{run_path}/validation_loss.npy', np.array(validation_loss))
 

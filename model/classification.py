@@ -23,9 +23,7 @@ def determine_direction(dx, dy, num_sectors):
     adjusted_angle_degrees = (angle_degrees + degrees_per_sector / 2) % 360
     sector = int(adjusted_angle_degrees // degrees_per_sector)
     
-    # Initialize a vector with zeros
     direction_vector = [0] * num_sectors
-    # Set the appropriate sector to 1
     direction_vector[sector] = 1
 
     return direction_vector
