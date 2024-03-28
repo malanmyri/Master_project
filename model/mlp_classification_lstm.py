@@ -2,10 +2,6 @@
 
 Comments: 
 
-The following clamping operation has been removed from the filter backbone
-
-
-
 The following code can be used to create unfiltered cross correlations.
 cc_12_no_filter = self.gcc(x1.view(batch_size, 1, num_stacked, length), x2.view(batch_size, 1, num_stacked, length))
 cc_13_no_filter = self.gcc(x1.view(batch_size, 1, num_stacked, length), x3.view(batch_size, 1, num_stacked, length))
@@ -22,6 +18,25 @@ for i in range(self.num_filters):
 
 I am unsure wehter the following is the best way.
 cc = cc.view(cc.shape[0], cc.shape[1]*cc.shape[2], cc.shape[3]) 
+
+The following code stems from when I tried to use groups in the convolutional layers.
+self.layer_1 = nn.Sequential(
+            nn.Conv2d(num_filters*3, num_channels*num_filters, kernel_size= (5,11), groups=num_filters),
+            nn.BatchNorm2d(num_channels*num_filters),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.5)
+        )
+
+stride = 2
+self.layer_2 = nn.Sequential(
+            nn.Conv1d(num_channels*num_filters, num_filters, kernel_size=11, stride = stride, groups=num_filters),
+            nn.BatchNorm1d(num_filters),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.5)
+        )
+
+
+
 '''
 
 
@@ -175,24 +190,31 @@ class SincNetGCC(nn.Module):
         self.gcc = GCC(max_tau = max_tau)                                                            # Initializing the GCC layer
         self.activation = act_fun(activation)                                                        # Initializing the activation function
         self.backbone = SincConv_fast(num_filters, num_taps, fs, max_fc, min_fc, min_band)           # Initializing the SincNet backbone
+        
         self.layer_1 = nn.Sequential(
-            nn.Conv2d(num_filters*3, num_channels*num_filters, kernel_size= (5,11), groups=num_filters),
-            nn.BatchNorm2d(num_channels*num_filters),
+            nn.Conv2d(num_filters*3, num_channels, kernel_size= (self.num_stacked,11)),
+            nn.BatchNorm2d(num_channels),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.5)
         )
 
-        stride = 1
         self.layer_2 = nn.Sequential(
-            nn.Conv1d(num_channels*num_filters, num_filters, kernel_size=11, stride = stride, groups=num_filters),
-            nn.BatchNorm1d(num_filters),
+            nn.Conv1d(num_channels, num_channels, kernel_size=self.final_kernel),
+            nn.BatchNorm1d(num_channels),
             nn.LeakyReLU(0.2),
             nn.Dropout(0.5)
         )
+        hidden_size = num_channels*(2 * self.max_tau + 1)
+        num_lstm_layers = 3
 
-        self.batch_norm = nn.BatchNorm1d((2 * self.max_tau//stride + 1)*num_filters)                                     # Initializing the batch normalization layer
+        self.lstm = nn.LSTM(input_size=num_channels*(2 * self.max_tau + 1), hidden_size=hidden_size, num_layers=num_lstm_layers, batch_first=True)
+
+
+        
+        self.batch_norm = nn.BatchNorm1d((2 * self.max_tau + 1)*num_channels)                                        # Initializing the batch normalization layer
         self.leaky_relu = nn.LeakyReLU(0.2)                                                          # Initializing the leaky relu activation function 
-        self.linear = nn.Linear((2 * self.max_tau//stride + 1)*num_filters, n_outputs)          # Initializing the linear layer
+        self.linear = nn.Linear((2 * self.max_tau + 1)* num_channels, n_outputs)          # Initializing the linear layer
+        self.linear = nn.Linear((2 * self.max_tau + 1)* num_channels, n_outputs)          # Initializing the linear layer
         
     def forward(self, x1, x2, x3):
 
@@ -221,14 +243,14 @@ class SincNetGCC(nn.Module):
         cc_23 = self.gcc(y2, y3)                                                                     # Calculating the GCC-PHAT between the filtered signals
 
 
-
-        batch_size, num_filters, num_stacked, max_tau_dim = cc_12.shape                              # Getting the shape of the GCC-PHAT tensor
-        num_cross_correlations = 3  
-        indices = torch.arange(num_filters) * num_cross_correlations                                 # Defining the indices for interleaving the GCC-PHAT tensors
-        cc = torch.zeros((batch_size, num_filters*num_cross_correlations, num_stacked, max_tau_dim)) # Initializing the tensor for the interleaved GCC-PHAT tensors
-        cc[:, indices, :, :] = cc_12                                                                 # Interleaving the GCC-PHAT tensors
-        cc[:, indices+1, :, :] = cc_13                                                               # Interleaving the GCC-PHAT tensors
-        cc[:, indices+2, :, :] = cc_23                                                               # Interleaving the GCC-PHAT tensors
+        cc = torch.cat((cc_12, cc_13, cc_23), dim=2)                                                  # Concatenating the GCC-PHAT tensors
+        #batch_size, num_filters, num_stacked, max_tau_dim = cc_12.shape                              # Getting the shape of the GCC-PHAT tensor
+        #num_cross_correlations = 3  
+        #indices = torch.arange(num_filters) * num_cross_correlations                                 # Defining the indices for interleaving the GCC-PHAT tensors
+        #cc = torch.zeros((batch_size, num_filters*num_cross_correlations, num_stacked, max_tau_dim)) # Initializing the tensor for the interleaved GCC-PHAT tensors
+        #cc[:, indices, :, :] = cc_12                                                                 # Interleaving the GCC-PHAT tensors
+        #cc[:, indices+1, :, :] = cc_13                                                               # Interleaving the GCC-PHAT tensors
+        #cc[:, indices+2, :, :] = cc_23                                                               # Interleaving the GCC-PHAT tensors
         
         cc = cc.to(x1.device)
 
@@ -240,12 +262,16 @@ class SincNetGCC(nn.Module):
         cc = cc.view(cc.shape[0], cc.shape[1], cc.shape[2]*cc.shape[3])                               # Reshaping the GCC-PHAT tensor so that it can be used in the convolutional layers
         
         s = cc.shape[2]
-        padding = get_pad(size=s, kernel_size=11, stride=1, dilation=1)                               # Calculating the padding for the convolutional layers
+        padding = get_pad(size=s, kernel_size=self.final_kernel, stride=1, dilation=1)                               # Calculating the padding for the convolutional layers
         cc = F.pad(cc, pad=padding, mode='constant')                                                  # Applying the padding to the GCC-PHAT tensor
-        cc = self.layer_2(cc)                                                                         # Applying the convolutional layer to the GCC-PHAT tensor
+        cc = self.layer_2(cc)     
+        
+                                                                            # Applying the convolutional layer to the GCC-PHAT tensor
         
         
-        cc = cc.view(cc.shape[0], cc.shape[1]*cc.shape[2])                                            # Reshaping the GCC-PHAT tensor so that it can be used in the convolutional layers
+        cc = cc.view(cc.shape[0], cc.shape[1]*cc.shape[2])  
+        
+        cc, (hn, cn) = self.lstm(cc)
         cc = self.batch_norm(cc)                                                                      # Applying the batch normalization layer to the GCC-PHAT tensor
         cc = self.leaky_relu(cc)                                                                      # Applying the leaky relu activation function to the GCC-PHAT tensor
         cc = self.linear(cc)                                                                          # Applying the linear layer to the GCC-PHAT tensor

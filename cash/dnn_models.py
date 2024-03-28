@@ -79,6 +79,11 @@ class SincConv_fast(nn.Module):
         self.min_band_hz = min_band_hz
 
         hz = np.linspace(self.min_low_hz, self.max_hz, self.out_channels + 1)
+
+        # scaling the hz values between 0 and 1 (computation friendly)
+        
+
+
         self.low_hz_ = nn.Parameter(torch.Tensor(hz[:-1]).view(-1, 1))
         self.band_hz_ = nn.Parameter(torch.Tensor(np.diff(hz)).view(-1, 1))
 

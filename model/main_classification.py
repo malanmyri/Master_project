@@ -16,7 +16,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-from mlp_classification import SincNetGCC
+from mlp_classification_lstm import SincNetGCC
 from dataset_classification import pre_stacked
 
 import matplotlib
@@ -28,37 +28,37 @@ import os
 '''
 Defining all the parameters
 '''
-data_path = r"data\processed_data\all_data_filtered_velocity_0.01_radius_20_num_sectors_4.pkl"
+data_path = r"data\processed_data\all_data_filtered_velocity_0.0_radius_100_num_sectors_8.pkl"
 print('Loading data...')
 data = pd.read_pickle(data_path)
 data.reset_index(drop=True, inplace=True)
 # shuffling the data
-#data = data.sample(frac=0.3).reset_index(drop=True)  # Shuffle the data
+data = data.sample(frac=1).reset_index(drop=True)  # Shuffle the data
 
 # balance the data by including the same percentage of each value for the direction class. 
 data = data.groupby('direction_label').apply(lambda x: x.sample(data.direction_label.value_counts().min(), random_state=42)).reset_index(drop=True)
-data = data.sample(frac=0.1).reset_index(drop=True)
 seed = 42
+
 
 # Training hyperparams
 batch_size = 32
 epochs = 100
 lr = 0.01               # learning rate
-wd = 0.01               # weight decay
-patience = 3           # Number of epochs to wait for improvement before stopping
+wd = 0.01              # weight decay
+patience = 5           # Number of epochs to wait for improvement before stopping
 
 # Model parameters
-max_tau = 30            # maximum tau value for GCC-PHAT
-num_filters = 30        # Number of sinc filters in the first conv layer in the backbone
-num_channels = 10       # Number of convolutional filters in the MLP layers
+max_tau = 20             # maximum tau value for GCC-PHAT
+num_filters = 3         # Number of sinc filters in the first conv layer in the backbone
+num_channels = 2         # Number of convolutional filters in the MLP layers
 activation = 'leaky_relu'
-max_cut_off_frequency = 30000.0
-min_cut_off_frequency = 1000.0
-min_band_width = 1000.0
+max_cut_off_frequency = 30000
+min_cut_off_frequency = 1000
+min_band_width = 50
 num_taps = 1001
 sampling_rate = 204800
 number_of_stacked = len(data.sensor_1.values[0])  # number of stacked samples
-n_outputs = 4           # number of output classes
+n_outputs = data.direction_label.nunique()        # Number of output classes
 
 
 # For reproducibility
@@ -79,7 +79,7 @@ data["dx"] = data["dx"]/max
 data["dy"] = data["dy"]/max
 
 # Splitting the data into training and validation sets
-training_data, validation_data = train_test_split(data, test_size=0.2, random_state=seed, shuffle=True,)
+training_data, validation_data = train_test_split(data, test_size=0.2, random_state=seed, shuffle=False)
 
 print('Plotting data distribution...')
 fig, ax = plt.subplots(1, 3, figsize=(20, 5))
@@ -110,7 +110,7 @@ plt.close()
 train_set = pre_stacked(training_data)
 val_set = pre_stacked(validation_data)
 
-train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True, drop_last=True)
+train_loader = torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=False, drop_last=True)
 val_loader = torch.utils.data.DataLoader(val_set, batch_size=batch_size, shuffle=False   , drop_last=True)
 
 print(f'Training set size: {len(train_set)}')
@@ -157,9 +157,10 @@ for e in range(epochs):
     for batch_idx, (x1, x2, x3, target) in enumerate(tqdm(train_loader, desc=f"Epoch {e+1}/{epochs} Training")):
         predicted = model(x1, x2, x3)
         loss = loss_fn(predicted, target)
-        optimizer.zero_grad()
+        
         loss.backward()
         optimizer.step()
+        optimizer.zero_grad() # moved this line to the end of the loop
         train_loss_epoch += loss.item()
     training_loss.append(train_loss_epoch / len(train_loader))
     scheduler.step()
@@ -168,6 +169,8 @@ for e in range(epochs):
     low_cut_off.append(model.backbone.lower_cut_off_frequency.data.clone()) 
     band_width.append(model.backbone.band_widths.data.clone())
 
+    # Print absolute change in low cut off and band width
+    print(f'Epoch {e+1}/{epochs}  - Low cut off change: {torch.abs(low_cut_off[-1] - low_cut_off[-2]).sum().item():.4f} - Band width change: {torch.abs(band_width[-1] - band_width[-2]).sum().item():.4f}')
 
     model.eval()
     val_loss_epoch = 0
@@ -192,7 +195,7 @@ for e in range(epochs):
             break 
 
 torch.save(optimizer.state_dict(), f'{run_path}/optimizer.pth')
-torch.save(scheduler.state_dict(), f'{run_path}/scheduler.pth')
+#torch.save(scheduler.state_dict(), f'{run_path}/scheduler.pth')
 
 # Plotting the loss
 fig, ax = plt.subplots(1, 1, figsize=(10, 5))
@@ -240,7 +243,7 @@ cc_path = f'{run_path}/cross_correlation_plots'
 os.mkdir(cc_path)
 
 filters = model.backbone.filters.detach().numpy()
-dt = len(data.sensor_1[0]) * 1/ sampling_rate
+dt = len(data.sensor_1[0][0]) * 1/ sampling_rate
 time = np.arange(0, dt*number_of_stacked, dt)
 time_shift = np.arange(-max_tau, max_tau+1) * 1/sampling_rate
 with torch.no_grad():
@@ -248,20 +251,21 @@ with torch.no_grad():
         cc = model.create_gcc(x1, x2, x3)
         cc = cc.detach().numpy()
         for batch in range(cc.shape[0]):
-            for stack in range(cc.shape[1]):
+            for filter in range(cc.shape[1]):
                 fig, ax = plt.subplots(1, 3, figsize=(30, 10))
                 
-                im0 = ax[0].pcolormesh(time_shift*1000 , time*1000, cc[batch, stack, :, :len(time_shift)])
-                im1 = ax[1].pcolormesh(time_shift*1000 , time*1000, cc[batch, stack, :, len(time_shift):2*len(time_shift)])
-                im2 = ax[2].pcolormesh(time_shift*1000 , time*1000, cc[batch, stack, :, 2*len(time_shift):])
+
+                im0 = ax[0].pcolormesh(time_shift*1000 , time*1000, cc[batch, filter, :number_of_stacked, :])
+                im1 = ax[1].pcolormesh(time_shift*1000 , time*1000, cc[batch, filter, number_of_stacked:2*number_of_stacked, :])
+                im2 = ax[2].pcolormesh(time_shift*1000 , time*1000, cc[batch, filter, 2*number_of_stacked:,:])
 
                 fig.colorbar(im0, ax=ax[0])
                 fig.colorbar(im1, ax=ax[1])
                 fig.colorbar(im2, ax=ax[2])
 
-                ax[0].set_title(f'GCC12 for Filter nr {stack}')
-                ax[1].set_title(f'GCC13 for Filter nr {stack}')
-                ax[2].set_title(f'GCC23 for Filter nr {stack}')
+                ax[0].set_title(f'GCC12 for Filter nr {filter}')
+                ax[1].set_title(f'GCC13 for Filter nr {filter}')
+                ax[2].set_title(f'GCC23 for Filter nr {filter}')
 
                 ax[0].set_aspect('auto')
                 ax[1].set_aspect('auto')
@@ -276,12 +280,13 @@ with torch.no_grad():
                 ax[2].set_ylabel('Time [ms]')
                 fig.tight_layout()
                 
-                plt.savefig(f'{cc_path}/GCC_for_filter_output_nr{stack}.png')
+                plt.savefig(f'{cc_path}/GCC_for_filter_output_nr{filter}.png')
                 plt.close() 
             break
 
 
 # Frequency response of the filters
+"""
 freq_path = f'{run_path}/filters'
 os.mkdir(freq_path)
 
@@ -312,11 +317,11 @@ for i in range(len(freq_response)):
     plt.savefig(f'{freq_path}/filter_{i}.png')
     plt.close()
 
-
+"""
 # Plotting a heatmap of the low cut off and band width
 
-low_cut_off = torch.stack(low_cut_off).detach().numpy()[:,:,0]
-band_width = torch.stack(band_width).detach().numpy()[:,:,0]
+low_cut_off = torch.stack(low_cut_off).detach().numpy()[:,:,0]*max_cut_off_frequency
+band_width = torch.stack(band_width).detach().numpy()[:,:,0]*max_cut_off_frequency
 
 fig, ax = plt.subplots(1, 2, figsize=(20, 10))
 im0 = ax[0].imshow(low_cut_off.T, aspect='auto')
