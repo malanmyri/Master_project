@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from classification import determine_direction
+from model.helper import determine_direction
 
 
 class pre_stacked(torch.utils.data.Dataset):

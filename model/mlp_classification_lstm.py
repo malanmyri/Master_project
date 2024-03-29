@@ -47,7 +47,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from GCC import GCC
-from torch_pad import get_pad
+from helper import get_pad
 import math
 from torch.autograd import Variable
 import numpy as np
@@ -205,16 +205,15 @@ class SincNetGCC(nn.Module):
             nn.Dropout(0.5)
         )
         hidden_size = num_channels*(2 * self.max_tau + 1)
-        num_lstm_layers = 3
+        num_lstm_layers = 2
 
         self.lstm = nn.LSTM(input_size=num_channels*(2 * self.max_tau + 1), hidden_size=hidden_size, num_layers=num_lstm_layers, batch_first=True)
 
 
         
-        self.batch_norm = nn.BatchNorm1d((2 * self.max_tau + 1)*num_channels)                                        # Initializing the batch normalization layer
+        self.batch_norm = nn.BatchNorm1d(hidden_size)                                        # Initializing the batch normalization layer
         self.leaky_relu = nn.LeakyReLU(0.2)                                                          # Initializing the leaky relu activation function 
-        self.linear = nn.Linear((2 * self.max_tau + 1)* num_channels, n_outputs)          # Initializing the linear layer
-        self.linear = nn.Linear((2 * self.max_tau + 1)* num_channels, n_outputs)          # Initializing the linear layer
+        self.linear = nn.Linear(hidden_size, n_outputs)          # Initializing the linear layer
         
     def forward(self, x1, x2, x3):
 
@@ -243,7 +242,7 @@ class SincNetGCC(nn.Module):
         cc_23 = self.gcc(y2, y3)                                                                     # Calculating the GCC-PHAT between the filtered signals
 
 
-        cc = torch.cat((cc_12, cc_13, cc_23), dim=2)                                                  # Concatenating the GCC-PHAT tensors
+        #
         #batch_size, num_filters, num_stacked, max_tau_dim = cc_12.shape                              # Getting the shape of the GCC-PHAT tensor
         #num_cross_correlations = 3  
         #indices = torch.arange(num_filters) * num_cross_correlations                                 # Defining the indices for interleaving the GCC-PHAT tensors
@@ -252,6 +251,7 @@ class SincNetGCC(nn.Module):
         #cc[:, indices+1, :, :] = cc_13                                                               # Interleaving the GCC-PHAT tensors
         #cc[:, indices+2, :, :] = cc_23                                                               # Interleaving the GCC-PHAT tensors
         
+        cc = torch.cat((cc_12, cc_13, cc_23), dim=1)                                                 # Concatenating the GCC-PHAT tensors
         cc = cc.to(x1.device)
 
         s = cc.shape[2]
