@@ -1,9 +1,9 @@
 import torch
 import numpy as np
-from model.helper import determine_direction
+from helper import determine_direction
 
 
-class pre_stacked(torch.utils.data.Dataset):
+class classification_stacked(torch.utils.data.Dataset):
     def __init__(self, data):
         self.s1 = data.sensor_1.values
         self.s2 = data.sensor_2.values
@@ -30,3 +30,4 @@ class pre_stacked(torch.utils.data.Dataset):
         target = torch.tensor(direction, dtype=torch.float32)
 
         return s1, s2, s3, target
+    
